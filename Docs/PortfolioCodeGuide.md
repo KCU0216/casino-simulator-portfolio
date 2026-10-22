@@ -8,6 +8,8 @@
 
 ## 1. 경마: 스크립트 공유와 로컬 재생
 
+[▶ 이동·완주 순서 비교 시연 (03:03)](https://www.youtube.com/watch?v=fHodD7kIsp4&t=183s)
+
 경마는 서버가 경주 결과를 먼저 계산하고, 각 클라이언트는 같은 경주 스크립트와 서버 시작 시각을 기준으로 주자의 이동을 재생합니다.
 
 ```mermaid
@@ -93,6 +95,8 @@ void ARaceRunner::TickRacing()
 
 ## 2. 상호작용: 컴포넌트가 관리하는 세션 수명
 
+[▶ 이용자별 세션 유지 시연 (02:50)](https://www.youtube.com/watch?v=fHodD7kIsp4&t=170s)
+
 머신은 `Actor`, NPC는 `Character`를 상속합니다. 두 계층에 공통 부모를 추가하는 대신, 각각 부착할 수 있는 `InteractionSessionComponent`로 참여자 관리와 진입·퇴장 규칙을 통합했습니다.
 
 ```mermaid
@@ -168,6 +172,8 @@ void UInteractionSessionComponent::RefreshNotifications()
 <a id="cooperative-carry"></a>
 
 ## 3. 협동 운반: 힘 합산과 기존 GE 갱신
+
+[▶ 참여·이탈과 이동 속도 갱신 시연 (03:56)](https://www.youtube.com/watch?v=fHodD7kIsp4&t=236s)
 
 단일 운반자를 여러 운반자로 확장했습니다. 각 클라이언트가 자신의 목표 위치를 전달하면, 서버는 참여자별 목표를 저장하고 힘을 합산해 광물을 움직입니다.
 

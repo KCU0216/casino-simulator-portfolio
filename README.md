@@ -11,6 +11,20 @@ Unreal Engine 5.7로 제작한 멀티플레이 카지노 게임입니다. 4명�
 
 이 저장소는 **담당 구현을 검토하기 위한 소스 모음**입니다. 전체 실행 프로젝트가 아니며, 광차 파일은 수평 운반 힘 계산 부분만 발췌했습니다. 팀 공통 의존 클래스와 Blueprint·게임 에셋을 포함하지 않아 단독 빌드는 지원하지 않습니다. 파일별 수록 범위는 [소스 구성](Docs/SourceIndex.md)에서 확인할 수 있습니다.
 
+## 구현 시연 영상
+
+[▶ 전체 시연 영상](https://www.youtube.com/watch?v=fHodD7kIsp4)
+
+간략한 게임 소개에 이어 담당 기능의 플레이와 주요 구현 동작을 담았습니다.
+
+| 기능 | 플레이 시연 | 주요 구현 동작 |
+| --- | --- | --- |
+| 경마 | [00:26 베팅·경주·당첨금 환전](https://www.youtube.com/watch?v=fHodD7kIsp4&t=26s) | [03:03 이동·완주 순서 비교](https://www.youtube.com/watch?v=fHodD7kIsp4&t=183s) |
+| 사다리머신 | [01:25 사다리 게임](https://www.youtube.com/watch?v=fHodD7kIsp4&t=85s) | [03:30 공용 화면과 개인 조작 UI 분리](https://www.youtube.com/watch?v=fHodD7kIsp4&t=210s) |
+| 공통 상호작용 | — | [02:50 이용자별 세션 유지](https://www.youtube.com/watch?v=fHodD7kIsp4&t=170s) |
+| 채광·협동 운반 | [01:55 채광·광물 운반](https://www.youtube.com/watch?v=fHodD7kIsp4&t=115s) | [03:56 참여·이탈에 따른 이동 속도 갱신](https://www.youtube.com/watch?v=fHodD7kIsp4&t=236s) |
+| 광차 | [02:26 광차 운반](https://www.youtube.com/watch?v=fHodD7kIsp4&t=146s) | — |
+
 ## 대표 코드
 
 아래 세 구현을 먼저 보면 네트워크 연출, 공통 기능 설계, 협동 플레이 처리 방식을 확인할 수 있습니다.
