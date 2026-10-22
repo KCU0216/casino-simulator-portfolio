@@ -1,0 +1,333 @@
+﻿// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Mining/OrePickupBase.h"
+
+#include "AbilitySystemBlueprintLibrary.h"
+#include "Mining/MiningGameplayTags.h"
+#include "AbilitySystemComponent.h"
+#include "Components/SphereComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "NativeGameplayTags.h"
+#include "Net/UnrealNetwork.h"
+#include "casino_simulatorCharacter.h"
+#include "GameplayEffect.h"
+
+UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Event_Ore_Pickup, "Event.Ore.Pickup");
+
+namespace
+{
+	constexpr float WeightForFullPenalty = 100.0f;
+	constexpr float MinimumCarryMovementMultiplier = 0.1f;
+}
+
+// Sets default values
+AOrePickupBase::AOrePickupBase()
+{
+	bReplicates = true;
+	SetReplicateMovement(true);
+	PrimaryActorTick.bCanEverTick = true;
+
+	OrePickupMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("OrePickupMesh"));
+	SetRootComponent(OrePickupMesh);
+	InteractionSphere->SetupAttachment(OrePickupMesh);
+	OrePickupMesh->SetCollisionProfileName(TEXT("BlockAll"));
+	OrePickupMesh->SetCollisionObjectType(ECC_PhysicsBody);
+	OrePickupMesh->SetGenerateOverlapEvents(true);
+	OrePickupMesh->SetSimulatePhysics(true);
+	OrePickupMesh->SetEnableGravity(true);
+}
+//상호작용 할 수 있는지 검사
+bool AOrePickupBase::CanInteract(Acasino_simulatorCharacter* InteractingCharacter) const
+{
+	return Super::CanInteract(InteractingCharacter)
+		&& Carriers.Num() < MaxCarryCount;
+}
+//무게에 따른 속도 변화량 가져오기
+float AOrePickupBase::GetCarryMovementMultiplier() const
+{
+	const int32 EffectiveCarrierCount = FMath::Max(Carriers.Num(), 1);
+	const float WeightPerCarrier = Weight / EffectiveCarrierCount;
+	const float WeightRatio = FMath::Clamp(WeightPerCarrier / WeightForFullPenalty, 0.0f, 1.0f);
+	return FMath::Clamp(1.0f - WeightRatio, MinimumCarryMovementMultiplier, 1.0f);
+}
+//로컬에서 시작 (예측)
+void AOrePickupBase::BeginLocalInteraction(Acasino_simulatorCharacter* InteractingCharacter)
+{
+	if (!InteractingCharacter)
+	{
+		return;
+	}
+
+	if (const UAbilitySystemComponent* AbilitySystem = InteractingCharacter->GetAbilitySystemComponent();
+		AbilitySystem && AbilitySystem->HasMatchingGameplayTag(MiningGameplayTags::PickaxeEquipped))
+	{
+		ReceivePickupBlocked(InteractingCharacter);
+		return;
+	}
+
+	FGameplayEventData Payload;
+	Payload.EventTag = TAG_Event_Ore_Pickup;
+	Payload.Instigator = InteractingCharacter;
+	Payload.Target = this;
+
+	UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
+		InteractingCharacter,
+		TAG_Event_Ore_Pickup,
+		Payload
+	);
+}
+//주워보기
+bool AOrePickupBase::TryPickUp(Acasino_simulatorCharacter* Character)
+{
+	if (!HasAuthority() || !IsValid(Character) || !CanInteract(Character)
+		|| Character->GetCarriedOre())
+	{
+		return false;
+	}
+
+	UAbilitySystemComponent* AbilitySystem = Character->GetAbilitySystemComponent();
+	if (!AbilitySystem)
+	{
+		return false;
+	}
+
+	if (AbilitySystem && AbilitySystem->HasMatchingGameplayTag(MiningGameplayTags::PickaxeEquipped))
+	{
+		return false;
+	}
+
+	if (!CanJoinCarry(Character))
+	{
+		return false;
+	}
+
+	const bool bCouldCarry = CanMoveCarry();
+	Carriers.AddUnique(Character);
+	SetLastCarrier(Character);
+	CarrierTargetLocations.FindOrAdd(Character) = GetActorLocation();
+
+	FGameplayEffectContextHandle Context = AbilitySystem->MakeEffectContext();
+	Context.AddSourceObject(this);
+
+	FGameplayEffectSpecHandle Spec = AbilitySystem->MakeOutgoingSpec(CarryEffectClass, 1.f , Context);
+
+	if (Spec.IsValid())
+	{
+		Spec.Data->SetSetByCallerMagnitude(FGameplayTag::RequestGameplayTag(
+			FName(TEXT("Data.Ore.CarryMovementMultiplier"))),
+			GetCarryMovementMultiplier()
+		);
+
+		FActiveGameplayEffectHandle Handle = AbilitySystem->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+
+		CarryEffectHandles.Add(Character, Handle);
+	}
+
+	RefreshCarryMovementEffects();
+
+	const bool bCanCarryNow = CanMoveCarry();
+	if (bCouldCarry != bCanCarryNow)
+	{
+		OrePickupMesh->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		OrePickupMesh->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+	}
+	OrePickupMesh->SetEnableGravity(!bCanCarryNow);
+	Character->SetCarriedOre(this);
+	ForceNetUpdate();
+	return true;
+}
+
+void AOrePickupBase::SetLastCarrier(Acasino_simulatorCharacter* Character)
+{
+	if (HasAuthority() && IsValid(Character))
+	{
+		LastCarrier = Character;
+	}
+}
+
+void AOrePickupBase::RefreshCarryMovementEffects()
+{
+
+	const float Multiplier = GetCarryMovementMultiplier();
+
+	const FGameplayTag DataTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.Ore.CarryMovementMultiplier")));
+
+	for (const auto& Carrier : Carriers)
+	{
+		if (!IsValid(Carrier.Get()))
+		{
+			continue;
+		}
+
+		UAbilitySystemComponent* ASC = Carrier->GetAbilitySystemComponent();
+		const FActiveGameplayEffectHandle* Handle =
+			CarryEffectHandles.Find(Carrier.Get());
+
+		if (!ASC || !Handle || !Handle->IsValid())
+		{
+			continue;
+		}
+
+		ASC->UpdateActiveGameplayEffectSetByCallerMagnitude(
+			*Handle, DataTag, Multiplier);
+	}
+
+
+}
+
+//놓아보기
+bool AOrePickupBase::TryDrop(Acasino_simulatorCharacter* Character)
+{
+	if (!HasAuthority()
+		|| !IsValid(Character)
+		|| Character->GetCarriedOre() != this
+		)
+	{
+		return false;
+	}
+
+	const bool bCouldCarry = CanMoveCarry();
+	Carriers.Remove(Character);
+	CarrierTargetLocations.Remove(Character);
+
+	if (UAbilitySystemComponent* AbilitySystem = Character->GetAbilitySystemComponent())
+	{
+		if (const FActiveGameplayEffectHandle* Handle = CarryEffectHandles.Find(Character);
+			Handle && Handle->IsValid())
+		{
+			AbilitySystem->RemoveActiveGameplayEffect(*Handle);
+		}
+	}
+
+	CarryEffectHandles.Remove(Character);
+	RefreshCarryMovementEffects();
+
+	const bool bCanCarryNow = CanMoveCarry();
+	if (bCouldCarry && !bCanCarryNow)
+	{
+		OrePickupMesh->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		OrePickupMesh->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+	}
+	OrePickupMesh->SetEnableGravity(!bCanCarryNow);
+	Character->SetCarriedOre(nullptr);
+	ForceNetUpdate();
+	return true;
+}
+//나도 참여 가능하냐
+bool AOrePickupBase::CanJoinCarry(Acasino_simulatorCharacter* Character)
+{
+	if (!Character)
+	{
+		return false;
+	}
+	if (Carriers.Num() >= MaxCarryCount)
+	{
+		return false;
+	}
+	if (Carriers.Contains(Character))
+	{
+		return false;
+	}
+	return true;
+}
+
+//움직일 수 있냐
+bool AOrePickupBase::CanMoveCarry() const
+{
+	return Carriers.Num() >= MinCarryCount && Carriers.Num() <= MaxCarryCount;
+}
+//옮기는 위치 업데이트
+bool AOrePickupBase::UpdateCarryTargetLocation(Acasino_simulatorCharacter* Character, FVector TargetLocation)
+{
+	//서버냐
+	if (!HasAuthority() || !IsValid(Character) || !Carriers.Contains(Character))
+	{
+		return false;
+	}
+	//말 되는 값이냐
+	if (TargetLocation.ContainsNaN())
+	{
+		CarrierTargetLocations.Remove(Character);
+		return false;
+	}
+	//클라가 똑바로 보냈냐
+	if (FVector::DistSquared(Character->GetActorLocation(), TargetLocation) > FMath::Square(MaxCarryTargetDistance))
+	{
+		CarrierTargetLocations.Remove(Character);
+		return false;
+	}
+	//광물이랑 너무 머냐
+	if (FVector::DistSquared(Character->GetActorLocation(), GetActorLocation()) > FMath::Square(MaxCarryTargetDistance))
+	{
+		CarrierTargetLocations.Remove(Character);
+		return false;
+	}
+	CarrierTargetLocations.FindOrAdd(Character) = TargetLocation;
+	return true;
+}
+
+void AOrePickupBase::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+	if (!HasAuthority() || Carriers.Num() == 0)
+	{
+		return;
+	}
+
+	FVector TotalSpringForce = FVector::ZeroVector;
+	for (const TObjectPtr<Acasino_simulatorCharacter>& Carrier : Carriers)
+	{
+		if (!IsValid(Carrier))
+		{
+			continue;
+		}
+
+		const FVector* TargetLocation = CarrierTargetLocations.Find(Carrier);
+		if (!TargetLocation || TargetLocation->ContainsNaN())
+		{
+			continue;
+		}
+
+		if (FVector::DistSquared(Carrier->GetActorLocation(), *TargetLocation) > FMath::Square(MaxCarryTargetDistance))
+		{
+			continue;
+		}
+
+		TotalSpringForce += (*TargetLocation - GetActorLocation()) * CarrySpringStrength;
+	}
+
+	const FVector CurrentVelocity = OrePickupMesh->GetPhysicsLinearVelocity();
+	const FVector DampingForce = -CurrentVelocity * CarryDampingStrength;
+	const FVector CarryForce = (TotalSpringForce + DampingForce).GetClampedToMaxSize(MaxCarryForce);
+
+	const float ForceScale = FMath::Clamp(
+		GetCarryMovementMultiplier(), MinimumCarryMovementMultiplier, 1.0f);
+	OrePickupMesh->AddForce(CarryForce * ForceScale);
+}
+
+// Called when the game starts or when spawned
+void AOrePickupBase::BeginPlay()
+{
+	Super::BeginPlay();
+
+	OrePickupMesh->SetMassOverrideInKg(NAME_None, FMath::Max(Weight, 1.0f), true);
+	
+}
+
+void AOrePickupBase::OnRep_Carriers()
+{
+	ReceiveCarrierCountChanged(
+		Carriers.Num(),
+		MinCarryCount,
+		MaxCarryCount
+	);
+}
+
+void AOrePickupBase::GetLifetimeReplicatedProps(
+	TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(AOrePickupBase, Carriers);
+}
